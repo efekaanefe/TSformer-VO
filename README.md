@@ -1,134 +1,209 @@
-# TSformer-VO: an end-to-end Transformer-based model for monocular visual odometry
+# TSformer-VO Inference Tutorial — `run_inference.py`
 
-[![IEEE](https://img.shields.io/badge/IEEE-00629B.svg?style=for-the-badge&logo=IEEE&logoColor=white)](https://ieeexplore.ieee.org/document/10845764)
-[![arXiv](https://img.shields.io/badge/cs.CV-arXiv%3A2305.06121-B31B1B.svg)](https://arxiv.org/abs/2305.06121)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/aofrancani/TSformer-VO/blob/main/LICENSE)
+A step-by-step guide to running **monocular visual odometry inference** with the
+TSformer-VO Transformer models on KITTI-style sequences. Given a folder of PNG frames,
+the script slides a short clip window over them, predicts the per-clip relative motion
+with a trained model, recovers the full trajectory, and saves predictions, a trajectory
+plot, and timing.
 
-Official repository of "[Transformer-Based Model for Monocular Visual Odometry: A Video Understanding Approach](https://ieeexplore.ieee.org/document/10845764)"
-
-## Abstract
-*Estimating the camera’s pose given images from a single camera is a traditional task in mobile robots and autonomous vehicles. This problem is called monocular visual odometry and often relies on geometric approaches that require considerable engineering effort for a specific scenario. Deep learning methods have been shown to be generalizable after proper training and with a large amount of available data. Transformer-based architectures have dominated the state-of-the-art in natural language processing and computer vision tasks, such as image and video understanding. In this work, we deal with the monocular visual odometry as a video understanding task to estimate the 6 degrees of freedom of a camera’s pose. We contribute by presenting the TSformer-VO model based on spatio-temporal self-attention mechanisms to extract features from clips and estimate the motions in an end-to-end manner. Our approach achieved competitive state-of-the-art performance compared with geometry-based and deep learning-based methods on the KITTI visual odometry dataset, outperforming the DeepVO implementation highly accepted in the visual odometry community.*
-
-<img src="tsformer-vo.jpg" width=1000>
-
-## Contents
-1. [Dataset](#1-dataset)
-2. [Pre-trained models](#2-pre-trained-models)
-3. [Setup](#3-setup)
-4. [Usage](#4-usage)
-5. [Evaluation](#5-evaluation)
-
-
-## 1. Dataset
-Download the [KITTI odometry dataset (grayscale).](https://www.cvlibs.net/datasets/kitti/eval_odometry.php)
-
-In this work, we use the `.jpg` format. You can convert the dataset to `.jpg` format with [png_to_jpg.py.](https://github.com/aofrancani/DPT-VO/blob/main/util/png_to_jpg.py)
-
-Create a simbolic link (Windows) or a softlink (Linux) to the dataset in the `dataset` folder:
-
-- On Windows:
-```mklink /D <path_to_your_project>\TSformer-VO\data <path_to_your_downloaded_data>```
-- On Linux: 
-```ln -s <path_to_your_downloaded_data> <path_to_your_project>/TSformer-VO/data```
-
-The data structure should be as follows:
-```
-|---TSformer-VO
-    |---data
-        |---sequences_jpg
-            |---00
-                |---image_0
-                    |---000000.png
-                    |---000001.png
-                    |---...
-                |---image_1
-                    |...
-                |---image_2
-                    |---...
-                |---image_3
-                    |---...
-            |---01
-            |---...
-		|---poses
-			|---00.txt
-			|---01.txt
-			|---...
+```bash
+python run_inference.py --model Model2 --sequences 04 07 10
 ```
 
-## 2. Pre-trained models
+> This is the **argparse-driven** inference entry point added to this fork. The original
+> upstream workflow (editing variables in `predict_poses.py`) is still described in the
+> main [`README.md`](README.md); this file documents the easier `run_inference.py` CLI.
 
-Here you find the checkpoints of our trained-models. The architectures vary according to the number of frames (Nf) in the input clip, which also influences the last MLP head.
+---
 
-**Google Drive folder**: [link to checkpoints in GDrive](https://drive.google.com/drive/folders/124Z8aCPtPVH4bsUR78NYaK4m6SLna2Kf?usp=share_link)
+## 1. What the script does
 
-| Model | Nf | Checkpoint (.pth) | Args (Model Parameters)|
-| --- | --- | --- | --- |
-| TSformer-VO-1 | 2 | [checkpoint_model1](https://drive.google.com/file/d/1p9tgK9hTwgC6-xRDtLecNJ8VYH0l5_aa/view?usp=sharing) | [args.pkl](https://drive.google.com/file/d/1qmD6pAmjYRqKNMs_3VQliFdqKjsN0YW9/view?usp=sharing) |
-| TSformer-VO-2 | 3 | [checkpoint_model2](https://drive.google.com/file/d/1ZnPvEf-fGpRoFcywaH2JVmaHjLgRa8Ez/view?usp=share_link) | [args.pkl](https://drive.google.com/file/d/1Ua-mCTYPzUoiyS5jadfm7TGz6zGKBevy/view?usp=share_link) |
-| TSformer-VO-3 | 4 | [checkpoint_model3](https://drive.google.com/file/d/1lYvLEXN5zWQy1dW5p6hEXdEOVH58JcoD/view?usp=sharing) | [args.pkl](https://drive.google.com/file/d/1kp-0R7v2pVRTNpxFXPG7DgBHLr7M2ct-/view?usp=share_link) |
+For the chosen `--model` and **each** `--sequences` entry:
 
-## 3. Setup
-- Create a virtual environment using Anaconda and activate it:
-```
+1. Loads the model checkpoint and its saved hyper-parameters (`checkpoints/<model>/`).
+2. Builds overlapping clip **windows** of `Nf` frames (`Nf = 2/3/4` for Model1/2/3).
+3. Runs each window through the network → `(Nf-1) × 6` relative-pose predictions
+   (3 ZYX Euler angles + 3 translation, normalised).
+4. Merges the overlapping windows, de-normalises, and **chains** the relative motions into
+   an absolute trajectory.
+5. Saves the raw predictions (`.npy`), a trajectory plot vs. ground truth, and `timing.json`.
+
+> **Note:** this script plots the trajectory in the model's own (already roughly metric)
+> frame — it does **not** apply Umeyama alignment or compute ATE. For aligned trajectories
+> and ATE, see §8.
+
+---
+
+## 2. Requirements
+
+- **Python 3.8**, **PyTorch 1.10.1** (CPU or CUDA), plus `torchvision`, `numpy`,
+  `matplotlib`, `Pillow`, `einops`, `tqdm`, `pyyaml` (full pinned list in
+  [`requirements.txt`](requirements.txt)).
+
+Create the environment exactly as upstream recommends:
+
+```bash
 conda create -n tsformer-vo python==3.8.0
 conda activate tsformer-vo
-```
-- Install dependencies (with environment activated):
-```
 pip install -r requirements.txt
 ```
 
-## 4. Usage
+The script auto-selects the device:
 
-**PS**: So far we are changing the settings and hyperparameters directly in the variables and dictionaries. As further work, we will use pre-set configurations with the `argparse` module to make a user-friendly interface.
+```python
+device = "cuda" if torch.cuda.is_available() else "cpu"
+```
 
-### 4.1. Training
+so it runs on CPU with no changes (just slower — see the timing numbers in §7).
 
-In `train.py`:
-- Manually set configuration in `args` (python dict);
-- Manually set the model hyperparameters in `model_params` (python dict);
-- Save and run the code `train.py`.
+> **This machine:** the prepared interpreter is
+> `C:/Users/EFO/miniconda3/envs/tsformer-vo/python.exe` (PyTorch 1.10.1, CPU).
+> **Run from the repo root** so the local `datasets/` and `timesformer/` packages import:
+> ```powershell
+> cd D:/Python_Related/Robotics/Robotics-Masters-Related/EE584-Machine_Vision/term_project_repo/TSformer-VO
+> C:/Users/EFO/miniconda3/envs/tsformer-vo/python.exe run_inference.py --model Model2 --sequences 10
+> ```
 
-### 4.2. Inference
+---
 
-In `predict_poses.py`:
-- Manually set the variables to read the checkpoint and sequences.
+## 3. Pre-trained checkpoints
 
-| **Variables**   | **Info**                                                                                                             |
-|-----------------|----------------------------------------------------------------------------------------------------------------------|
-| checkpoint_path | String with the path to the trained model you want to use for inference.  Ex: checkpoint_path = "checkpoints/Model1" |
-| checkpoint_name | String with the name of the desired checkpoint (name of the .pth file).  Ex: checkpoint_name = "checkpoint_model2_exp19" |
-| sequences       | List with strings representing the KITTI sequences.  Ex: sequences = ["03", "04", "10"]                              |
+The three variants ship under `checkpoints/`, each with a `.pth` weight file and an
+`args.pkl` holding `window_size`, `overlap`, and the model dimensions:
 
-### 4.3. Visualize Trajectories
-In `plot_results.py`:
-- Manually set the variables to the checkpoint and desired sequences, similarly to [Inference](#42-inference)
+| `--model` | Frames/clip `Nf` | Poses/clip | Checkpoint folder |
+|-----------|------------------|------------|-------------------|
+| `Model1`  | 2 | 1 | `checkpoints/Model1/` |
+| `Model2`  | 3 | 2 | `checkpoints/Model2/` |
+| `Model3`  | 4 | 3 | `checkpoints/Model3/` |
 
+The script picks the single `.pth` it finds in the folder automatically — you only pass
+`--model`. (To re-download, see the Google Drive links in the main `README.md`.)
 
-## 5. Evaluation
-The evaluation is done with the [KITTI odometry evaluation toolbox](https://github.com/Huangying-Zhan/kitti-odom-eval). Please go to the [evaluation repository](https://github.com/Huangying-Zhan/kitti-odom-eval) to see more details about the evaluation metrics and how to run the toolbox.
+---
 
+## 4. Expected dataset layout
 
-## Citation
-Please cite our paper you find this research useful in your work:
+```
+<data_root>/
+  <seq>/
+    image_<camera_id>/*.png      # the frames (image_0 = left grayscale)
+    calib.txt                    # not used by this script, but kept with the sequence
+poses/                           # default poses_dir = <data_root>/poses
+  <seq>.txt                      # 12-value 3x4 ground-truth rows (optional)
+```
 
-```bibtex
-@article{Francani2025,
-  author={Françani, André O. and Maximo, Marcos R. O. A.},
-  journal={IEEE Access}, 
-  title={Transformer-Based Model for Monocular Visual Odometry: A Video Understanding Approach}, 
-  year={2025},
-  volume={13},
-  number={},
-  pages={13959-13971},
-  doi={10.1109/ACCESS.2025.3531667}
+- `--data_root` defaults to `data/sequences_png` (relative to the repo).
+- Ground truth is **optional**: without `<seq>.txt` the trajectory is still produced and
+  plotted, just with no red GT overlay.
+- Sequence `22` (Isaac Sim) keeps its frames in `image_2`, so run it with `--camera_id 2`.
+
+---
+
+## 5. Quick start
+
+Run the default model on a short, smooth sequence:
+
+```bash
+python run_inference.py --model Model1 --sequences 10
+```
+
+Expected console output:
+
+```
+Device: cpu
+Model: Model1 | checkpoint: checkpoint_model1_exp12
+window_size=2, overlap=1, num_frames=2
+
+Sequence 10: 1201 frames, 1200 windows
+Seq 10: 100%|██████████| 1200/1200 [..]
+  elapsed: ...s  (... ms/frame)
+  Saved predictions → results/Model1/pred_poses_10.npy
+  Saved timing      → results/Model1/timing.json
+  Saved plot        → results/Model1/trajectory_10.png
+```
+
+---
+
+## 6. Command-line reference
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--model` | `Model1` | Which variant to run: `Model1`, `Model2`, or `Model3`. |
+| `--sequences` | `04 10` | One or more sequence IDs to process. |
+| `--data_root` | `data/sequences_png` | Root folder holding `<seq>/image_*/`. |
+| `--camera_id` | `0` | Which camera's frames to read (`image_<id>`). |
+| `--poses_dir` | `data/sequences_png/poses` | Folder with ground-truth `<seq>.txt` files. |
+
+There is no `--output_dir`: results always go to **`results/<model>/`**. There are no
+`--stride`, `--max_frames`, or bundle-adjustment flags (those belong to the classical
+pipeline) — window size and overlap come from each checkpoint's `args.pkl`.
+
+```bash
+python run_inference.py --help
+```
+
+---
+
+## 7. Outputs explained
+
+All written under `results/<model>/`:
+
+| File | Contents |
+|------|----------|
+| `pred_poses_<seq>.npy` | Raw per-window predictions, shape `(num_windows, Nf-1, 6)`. The 6 = 3 normalised ZYX Euler angles + 3 normalised translation. |
+| `trajectory_<seq>.png` | Predicted trajectory (solid blue) vs. ground truth (dashed red), with start/end markers. |
+| `timing.json` | Per-sequence timing, accumulated across runs into one JSON object. |
+
+A `timing.json` entry:
+
+```json
+"10": {
+  "elapsed_s": 1410.76,
+  "frames": 1201,
+  "windows": 1199,
+  "ms_per_frame": 1174.7,
+  "ms_per_window": 1176.6
 }
 ```
 
-## References
+> The `.npy` holds **relative, normalised** predictions, *not* absolute poses. To turn
+> them into a trajectory, the script de-normalises with the dataset mean/std, converts the
+> Euler angles to rotations, builds each `4×4` relative transform, and chains them
+> (`post_processing` + `recover_trajectory` in this file). The classical-repo tool in §8
+> reuses the exact same recovery.
 
-Code adapted from [TimeSformer](https://github.com/facebookresearch/TimeSformer). 
+---
 
-Check out our previous work on monocular visual odometry: [DPT-VO](https://github.com/aofrancani/DPT-VO)
+## 8. Aligned trajectories and ATE (cross-repo)
 
- 
+`run_inference.py` plots the **raw** trajectory only. To get the Umeyama-aligned plots and
+the per-sequence `scale_to_gt` / `ate_m` used in the report, run the visualiser from the
+classical-VO repo, which reads these same `.npy` files:
+
+```bash
+# from the Visual-Inertial-Odometry repo
+python tools/visualize_tsformer.py --models Model1 Model2 Model3 --sequences 04 07 10 --mode all
+```
+
+It writes `trajectory_<seq>_<mode>.png` (raw / aligned / anchored) into
+`results/<model>/views/` and appends `scale_to_gt` / `ate_m` to each model's `timing.json`.
+
+---
+
+## 9. Common recipes
+
+```bash
+# All three models on the report's sequences
+python run_inference.py --model Model1 --sequences 00 01 02 03 04 05 06 07 08 09 10
+python run_inference.py --model Model2 --sequences 00 01 02 03 04 05 06 07 08 09 10
+python run_inference.py --model Model3 --sequences 00 01 02 03 04 05 06 07 08 09 10
+
+# Sequence 22 (Isaac Sim) — frames live in image_2
+python run_inference.py --model Model2 --sequences 22 --camera_id 2
+
+# A dataset in a custom location
+python run_inference.py --model Model3 --sequences 04 --data_root D:/datasets/kitti/sequences_png --poses_dir D:/datasets/kitti/poses
+```
+
+---
