@@ -29,4 +29,5 @@ data
 .gitattributes
 checkpoints
 checkpoints/
-KITTI_gray/
+
+results/
